@@ -1,0 +1,71 @@
+# ⭐️ Prometheus Configuration for MCP Server
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'mcp-server'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+# Load rules once and periodically evaluate them according to the global 'evaluation_interval'.
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # MCP Backend API
+  - job_name: 'mcp-backend'
+    metrics_path: '/api/v1/metrics'
+    static_configs:
+      - targets: ['backend:3000']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'mcp-backend'
+
+  # Redis Exporter (if using)
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'mcp-redis'
+
+  # Elasticsearch Exporter (if using)
+  - job_name: 'elasticsearch'
+    static_configs:
+      - targets: ['elasticsearch:9200']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'mcp-elasticsearch'
+
+  # ScyllaDB Monitoring (if exposed)
+  - job_name: 'scylladb'
+    static_configs:
+      - targets: ['scylladb:9180']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'mcp-scylladb'
+
+  # Node Exporter (host metrics)
+  - job_name: 'node'
+    static_configs:
+      - targets: ['host.docker.internal:9100']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'docker-host'
