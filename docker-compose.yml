@@ -1,0 +1,287 @@
+version: '3.9'
+
+services:
+  # ⭐️ Redis - Cache Layer with Authentication
+  redis:
+    image: redis:7-alpine
+    container_name: mcp-redis
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - ${VOLUMES_BASE_PATH:-./docker/volumes}/redis:/data
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf --requirepass ${REDIS_PASSWORD}
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mcp-network
+    deploy:
+      resources:
+        limits:
+          memory: ${REDIS_MEMORY_LIMIT:-2g}
+
+  # ⭐️ ScyllaDB - Primary Storage with Authentication
+  scylladb:
+    image: scylladb/scylla:5.2
+    container_name: mcp-scylladb
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:${SCYLLA_PORT:-9042}:9042"
+      - "0.0.0.0:${SCYLLA_API_PORT:-10000}:10000"
+    volumes:
+      - ${VOLUMES_BASE_PATH:-./docker/volumes}/scylladb:/var/lib/scylla
+      - ./docker/scylladb/cassandra-rackdc.properties:/etc/scylla/cassandra-rackdc.properties:ro
+      - ./docker/scylladb/init.cql:/docker-entrypoint-initdb.d/init.cql:ro
+    command: --seeds=scylladb --smp 1 --memory 2G --overprovisioned 1 --api-address 0.0.0.0
+    environment:
+      - SCYLLA_USERNAME=${SCYLLA_USERNAME}
+      - SCYLLA_PASSWORD=${SCYLLA_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -u ${SCYLLA_USERNAME} -p ${SCYLLA_PASSWORD} -e 'SELECT now() FROM system.local' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    networks:
+      - mcp-network
+    deploy:
+      resources:
+        limits:
+          memory: ${SCYLLA_MEMORY_LIMIT:-4g}
+
+  # ⭐️ Elasticsearch - Semantic Search with Security
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.2
+    container_name: mcp-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.authc.api_key.enabled=false
+      - ELASTIC_PASSWORD=${ELASTICSEARCH_PASSWORD}
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+      - cluster.name=mcp-cluster
+      - bootstrap.memory_lock=true
+      - indices.query.bool.max_clause_count=2048
+      - search.max_buckets=100000
+    ports:
+      - "0.0.0.0:${ELASTIC_PORT:-9200}:9200"
+      - "0.0.0.0:${ELASTIC_TRANSPORT_PORT:-9300}:9300"
+    volumes:
+      - ${VOLUMES_BASE_PATH:-./docker/volumes}/elasticsearch:/usr/share/elasticsearch/data
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD-SHELL", "curl -u elastic:${ELASTICSEARCH_PASSWORD} -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - mcp-network
+    deploy:
+      resources:
+        limits:
+          memory: ${ELASTIC_MEMORY_LIMIT:-2g}
+
+  # ⭐️ Backend API with Full Environment Configuration
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        NODE_ENV: ${NODE_ENV:-production}
+    container_name: mcp-backend
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:${API_PORT:-3000}:3000"
+    environment:
+      # Application
+      - NODE_ENV=${NODE_ENV:-production}
+      - PORT=3000
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_FORMAT=${LOG_FORMAT:-json}
+
+      # Authentication
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-15m}
+      - JWT_REFRESH_EXPIRES_IN=${JWT_REFRESH_EXPIRES_IN:-7d}
+
+      # Redis
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_POOL_SIZE=${REDIS_POOL_SIZE:-10}
+
+      # ScyllaDB
+      - SCYLLA_CONTACT_POINTS=scylladb
+      - SCYLLA_PORT=9042
+      - SCYLLA_KEYSPACE=${SCYLLA_KEYSPACE:-mcp_memory}
+      - SCYLLA_USERNAME=${SCYLLA_USERNAME}
+      - SCYLLA_PASSWORD=${SCYLLA_PASSWORD}
+      - SCYLLA_DATACENTER=${SCYLLA_DATACENTER:-datacenter1}
+      - SCYLLA_POOL_SIZE=${SCYLLA_POOL_SIZE:-10}
+
+      # Elasticsearch
+      - ELASTICSEARCH_NODE=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=${ELASTICSEARCH_USERNAME}
+      - ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD}
+      - ELASTICSEARCH_INDEX=${ELASTICSEARCH_INDEX:-mcp_notes}
+      - ELASTIC_POOL_SIZE=${ELASTIC_POOL_SIZE:-10}
+
+      # Rate Limiting
+      - RATE_LIMIT_BASIC_WINDOW_MS=${RATE_LIMIT_BASIC_WINDOW_MS:-60000}
+      - RATE_LIMIT_BASIC_MAX=${RATE_LIMIT_BASIC_MAX:-1000}
+      - RATE_LIMIT_PRO_WINDOW_MS=${RATE_LIMIT_PRO_WINDOW_MS:-60000}
+      - RATE_LIMIT_PRO_MAX=${RATE_LIMIT_PRO_MAX:-10000}
+      - RATE_LIMIT_ENTERPRISE_WINDOW_MS=${RATE_LIMIT_ENTERPRISE_WINDOW_MS:-60000}
+      - RATE_LIMIT_ENTERPRISE_MAX=${RATE_LIMIT_ENTERPRISE_MAX:-100000}
+
+      # Performance
+      - DATABASE_TIMEOUT=${DATABASE_TIMEOUT:-5000}
+      - API_TIMEOUT=${API_TIMEOUT:-30000}
+      - SEARCH_TIMEOUT=${SEARCH_TIMEOUT:-10000}
+      - CACHE_TTL_SHORT=${CACHE_TTL_SHORT:-300}
+      - CACHE_TTL_MEDIUM=${CACHE_TTL_MEDIUM:-3600}
+      - CACHE_TTL_LONG=${CACHE_TTL_LONG:-86400}
+
+      # External Services
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - MOCK_EXTERNAL_SERVICES=${MOCK_EXTERNAL_SERVICES:-false}
+    depends_on:
+      redis:
+        condition: service_healthy
+      # scylladb:
+      #   condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+      - ${VOLUMES_BASE_PATH:-./docker/volumes}/uploads:/app/uploads
+      - ${VOLUMES_BASE_PATH:-./docker/volumes}/logs:/app/logs
+      - ${VOLUMES_BASE_PATH:-./docker/volumes}/backups:/app/backups
+    networks:
+      - mcp-network
+    deploy:
+      resources:
+        limits:
+          memory: ${BACKEND_MEMORY_LIMIT:-1g}
+    command: npm run start
+
+  # ⭐️ Prometheus - Metrics Collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: mcp-prometheus
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ${VOLUMES_BASE_PATH:-./docker/volumes}/prometheus:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - mcp-network
+
+  # ⭐️ Grafana - Monitoring Dashboard
+  grafana:
+    image: grafana/grafana:latest
+    container_name: mcp-grafana
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:${GRAFANA_PORT:-3001}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_INSTALL_PLUGINS=redis-datasource,elasticsearch-datasource
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ${VOLUMES_BASE_PATH:-./docker/volumes}/grafana:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - mcp-network
+
+  # ⭐️ Frontend - Monitoring Dashboard
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NODE_ENV: ${NODE_ENV:-production}
+    container_name: mcp-frontend
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:${FRONTEND_PORT:-3002}:3000"
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - REACT_APP_API_URL=http://backend:3000
+      - REACT_APP_GRAFANA_URL=http://grafana:3000
+      - REACT_APP_PROMETHEUS_URL=http://prometheus:9090
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - mcp-network
+    command: npm start
+
+  # ⭐️ Backup Service (Optional)
+  backup:
+    image: alpine:latest
+    container_name: mcp-backup
+    restart: unless-stopped
+    volumes:
+      - ${VOLUMES_BASE_PATH:-./docker/volumes}:/data:ro
+      - ${VOLUMES_BASE_PATH:-./docker/volumes}/backups:/backups
+      - ./docker/backup/backup.sh:/backup.sh:ro
+    environment:
+      - BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-30}
+      - BACKUP_SCHEDULE=${BACKUP_SCHEDULE:-"0 2 * * *"}
+    networks:
+      - mcp-network
+    command: sh -c "crond -f -l 2"
+    profiles:
+      - backup
+
+networks:
+  mcp-network:
+    driver: bridge
+    name: ${DOCKER_NETWORK_NAME:-mcp-network}
+    ipam:
+      config:
+        - subnet: ${DOCKER_NETWORK_SUBNET:-172.20.0.0/16}
+
+volumes:
+  # Named volumes untuk production
+  redis-data:
+    driver: local
+  scylladb-data:
+    driver: local
+  elasticsearch-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+  backup-data:
+    driver: local

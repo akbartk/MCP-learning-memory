@@ -1,0 +1,60 @@
+{
+  "backupId": "backup_20250913T013155655Z_fymk81",
+  "type": "full",
+  "timestamp": "2025-09-13T01:31:55.655Z",
+  "sources": [
+    "users",
+    "notes",
+    "sessions"
+  ],
+  "archive": {
+    "version": "1.0",
+    "created": "2025-09-13T01:31:55.660Z",
+    "path": "test-backups/full/backup_20250913T013155655Z_fymk81.zip",
+    "size": 363,
+    "originalSize": 777,
+    "entryCount": 3,
+    "fileCount": 3,
+    "compression": {
+      "method": "gzip",
+      "level": 6,
+      "ratio": 0.4671814671814672
+    },
+    "encryption": {
+      "enabled": false,
+      "algorithm": null
+    }
+  },
+  "entries": [
+    {
+      "name": "users.json",
+      "path": "database/users.json",
+      "type": "database",
+      "size": 257,
+      "metadata": {
+        "table": "users",
+        "recordCount": 480
+      }
+    },
+    {
+      "name": "notes.json",
+      "path": "database/notes.json",
+      "type": "database",
+      "size": 257,
+      "metadata": {
+        "table": "notes",
+        "recordCount": 408
+      }
+    },
+    {
+      "name": "sessions.json",
+      "path": "database/sessions.json",
+      "type": "database",
+      "size": 263,
+      "metadata": {
+        "table": "sessions",
+        "recordCount": 418
+      }
+    }
+  ]
+}
